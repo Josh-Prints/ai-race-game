@@ -24,7 +24,9 @@ POP_SIZE = 24
 GENERATIONS = 60
 MAX_STEPS_PER_GEN = 700
 SUBSTEPS_PER_FRAME = 4
-N_IN, N_HIDDEN, N_OUT = 6, 10, 2
+N_IN, N_OUT = 6, 2
+DEFAULT_HIDDEN_LAYERS = 1
+DEFAULT_NEURONS_PER_LAYER = 10
 CUSTOM_TRACK_PATH = 'custom_track.json'
 LAPS_TO_WIN = 3
 COUNTDOWN_SECONDS = 3
@@ -79,11 +81,14 @@ class App:
         self.track_width_var = tk.IntVar(value=90)
         self.generations_var = tk.IntVar(value=GENERATIONS)
         self.steps_var = tk.IntVar(value=MAX_STEPS_PER_GEN)
+        self.hidden_layers_var = tk.IntVar(value=DEFAULT_HIDDEN_LAYERS)
+        self.neurons_var = tk.IntVar(value=DEFAULT_NEURONS_PER_LAYER)
         self.editor_points = []
         self.best_lap_time = None
         self._particles = []
         self.track_name = "Oval Classic"
         self.show_mind = False
+        self.hidden_sizes = [DEFAULT_NEURONS_PER_LAYER] * DEFAULT_HIDDEN_LAYERS
 
         self.keys_down = set()
         root.bind('<KeyPress>', self.on_key_down)
@@ -153,7 +158,25 @@ class App:
         tk.Scale(steps_frame, from_=200, to=4000, orient='horizontal',
                  variable=self.steps_var, length=160, bg=BG, fg=TEXT,
                  troughcolor=PANEL_BG, highlightthickness=0).pack(side='left')
+
+        layers_frame2 = tk.Frame(self.root, bg=BG)
+        layers_frame2.pack(pady=(0, 8))
+        hl_frame = tk.Frame(layers_frame2, bg=BG)
+        hl_frame.pack(side='left', padx=10)
+        tk.Label(hl_frame, text="Hidden layers:", fg=MUTED, bg=BG).pack(side='left')
+        tk.Scale(hl_frame, from_=1, to=4, orient='horizontal',
+                 variable=self.hidden_layers_var, length=120, bg=BG, fg=TEXT,
+                 troughcolor=PANEL_BG, highlightthickness=0).pack(side='left')
+
+        neurons_frame = tk.Frame(layers_frame2, bg=BG)
+        neurons_frame.pack(side='left', padx=10)
+        tk.Label(neurons_frame, text="Neurons per hidden layer:", fg=MUTED, bg=BG).pack(side='left')
+        tk.Scale(neurons_frame, from_=4, to=24, orient='horizontal',
+                 variable=self.neurons_var, length=160, bg=BG, fg=TEXT,
+                 troughcolor=PANEL_BG, highlightthickness=0).pack(side='left')
+
         self._width_frame = settings_frame
+        self._layers_frame = layers_frame2
 
     def draw_menu_background(self):
         self.canvas.configure(bg='#20242f')
@@ -192,7 +215,7 @@ class App:
 
         with open(weights_path(name)) as f:
             weights = json.load(f)
-        net = car_ai.NeuralNet(N_IN, N_HIDDEN, N_OUT, weights=weights)
+        net = car_ai.NeuralNet(N_IN, [], N_OUT, weights=weights)
 
         wps = car_ai.waypoints
         self.start_x, self.start_y = wps[0]
@@ -208,6 +231,7 @@ class App:
         self.canvas.configure(bg='#20242f')
         self.clear_controls()
         self._width_frame.pack_forget()
+        self._layers_frame.pack_forget()
         self.hud.config(text="Click to place track points (at least 4). Click points in order around the loop.")
 
         self.make_button(self.controls, "Undo last point", self.editor_undo).pack(side='left', padx=4)
@@ -253,6 +277,7 @@ class App:
         self.track_name = "Custom"
         car_ai.set_track(pts, self.track_width_var.get())
         self._width_frame.pack_forget()
+        self._layers_frame.pack_forget()
         self.begin_training()
 
     # ---------------- shared drawing ----------------
@@ -362,50 +387,60 @@ class App:
         return f'#{r:02x}{g:02x}{b:02x}'
 
     def draw_ai_mind(self, net):
-        """Live view of the leading AI's neural network: nodes lit by activation, edges by weight."""
+        """Live view of the leading AI's neural network: nodes lit by activation, edges by weight.
+
+        Works for any number of hidden layers - one column per layer in net.layer_sizes,
+        spaced evenly across the panel.
+        """
         x0, y0, w, h = 630, 65, 250, 470
         self.canvas.create_rectangle(x0, y0, x0+w, y0+h, fill='#0e1119', outline=ACCENT, width=2)
         self.canvas.create_text(x0 + w/2, y0 + 16, text="AI's Mind", fill=ACCENT, font=('Arial', 12, 'bold'))
 
-        n_in, n_hid, n_out = net.n_in, net.n_hidden, net.n_out
-        in_x, hid_x, out_x = x0 + 45, x0 + w/2, x0 + w - 45
+        n_layers = len(net.layer_sizes)
         top, bot = y0 + 40, y0 + h - 20
+        left, right = x0 + 30, x0 + w - 30
+
+        def layer_x(li):
+            if n_layers == 1:
+                return (left + right) / 2
+            return left + (right - left) * li / (n_layers - 1)
 
         def positions(n):
             if n == 1:
                 return [(top + bot) / 2]
             return [top + (bot - top) * i / (n - 1) for i in range(n)]
 
-        in_y = positions(n_in)
-        hid_y = positions(n_hid)
-        out_y = positions(n_out)
+        node_y = [positions(n) for n in net.layer_sizes]
+        node_x = [layer_x(li) for li in range(n_layers)]
+        node_radius = [8] + [6] * (n_layers - 2) + [8] if n_layers > 1 else [8]
 
-        for i, iy in enumerate(in_y):
-            for hidx, hy in enumerate(hid_y):
-                weight = net.w1[hidx][i]
-                width = min(3, 0.3 + abs(weight))
-                color = '#4caf7d' if weight >= 0 else '#c94f4f'
-                self.canvas.create_line(in_x, iy, hid_x, hy, fill=color, width=width)
-        for hidx, hy in enumerate(hid_y):
-            for o, oy in enumerate(out_y):
-                weight = net.w2[o][hidx]
-                width = min(3, 0.3 + abs(weight))
-                color = '#4caf7d' if weight >= 0 else '#c94f4f'
-                self.canvas.create_line(hid_x, hy, out_x, oy, fill=color, width=width)
+        # edges, drawn from each (w, b) layer connecting consecutive columns
+        for li, (w_mat, b_vec) in enumerate(net.layers):
+            xa, xb = node_x[li], node_x[li + 1]
+            ys_a, ys_b = node_y[li], node_y[li + 1]
+            for j in range(len(b_vec)):
+                for i in range(len(ys_a)):
+                    weight = w_mat[j][i]
+                    line_w = min(3, 0.3 + abs(weight))
+                    color = '#4caf7d' if weight >= 0 else '#c94f4f'
+                    self.canvas.create_line(xa, ys_a[i], xb, ys_b[j], fill=color, width=line_w)
 
-        for i, iy in enumerate(in_y):
-            val = net.last_inputs[i] if i < len(net.last_inputs) else 0.0
-            self.canvas.create_oval(in_x-8, iy-8, in_x+8, iy+8, fill=self._activation_color(val), outline='#000')
-            label = INPUT_LABELS[i] if i < len(INPUT_LABELS) else str(i)
-            self.canvas.create_text(in_x - 24, iy, text=label, fill=MUTED, font=('Arial', 8), anchor='e')
-        for hidx, hy in enumerate(hid_y):
-            val = net.last_hidden[hidx] if hidx < len(net.last_hidden) else 0.0
-            self.canvas.create_oval(hid_x-6, hy-6, hid_x+6, hy+6, fill=self._activation_color(val), outline='#000')
-        for o, oy in enumerate(out_y):
-            val = net.last_outputs[o] if o < len(net.last_outputs) else 0.0
-            self.canvas.create_oval(out_x-8, oy-8, out_x+8, oy+8, fill=self._activation_color(val), outline='#000')
-            label = OUTPUT_LABELS[o] if o < len(OUTPUT_LABELS) else str(o)
-            self.canvas.create_text(out_x + 24, oy, text=label, fill=MUTED, font=('Arial', 8), anchor='w')
+        # nodes, colored by the net's last activation for that layer
+        for li in range(n_layers):
+            xs = node_x[li]
+            r = node_radius[li]
+            values = net.activations[li] if li < len(net.activations) else [0.0] * net.layer_sizes[li]
+            for i, ys in enumerate(node_y[li]):
+                val = values[i] if i < len(values) else 0.0
+                self.canvas.create_oval(xs-r, ys-r, xs+r, ys+r, fill=self._activation_color(val), outline='#000')
+            if li == 0:
+                for i, ys in enumerate(node_y[li]):
+                    label = INPUT_LABELS[i] if i < len(INPUT_LABELS) else str(i)
+                    self.canvas.create_text(xs - r - 16, ys, text=label, fill=MUTED, font=('Arial', 8), anchor='e')
+            elif li == n_layers - 1:
+                for i, ys in enumerate(node_y[li]):
+                    label = OUTPUT_LABELS[i] if i < len(OUTPUT_LABELS) else str(i)
+                    self.canvas.create_text(xs + r + 16, ys, text=label, fill=MUTED, font=('Arial', 8), anchor='w')
 
     # ---------------- training setup ----------------
     def begin_training(self):
@@ -423,12 +458,13 @@ class App:
 
         self.generations_target = self.generations_var.get()
         self.max_steps_per_gen = self.steps_var.get()
+        self.hidden_sizes = [self.neurons_var.get()] * self.hidden_layers_var.get()
         self.generation = 1
         self.steps_this_gen = 0
         self.best_ever_net = None
         self.best_ever_fit = -1
         self.leader_net = None
-        self.population = [car_ai.NeuralNet(N_IN, N_HIDDEN, N_OUT) for _ in range(POP_SIZE)]
+        self.population = [car_ai.NeuralNet(N_IN, self.hidden_sizes, N_OUT) for _ in range(POP_SIZE)]
         self.cars = [car_ai.Car(self.start_x, self.start_y, self.start_angle) for _ in self.population]
 
     def toggle_mind(self):
@@ -503,7 +539,7 @@ class App:
                                           bg='#33415c', width=16)
         self.mind_btn.pack(side='left', padx=4)
         self.mind_btn.config(text="Hide AI Mind" if self.show_mind else "Show AI Mind")
-        net = self.best_ever_net if self.best_ever_net else car_ai.NeuralNet(N_IN, N_HIDDEN, N_OUT)
+        net = self.best_ever_net if self.best_ever_net else car_ai.NeuralNet(N_IN, self.hidden_sizes, N_OUT)
         self.ai_net = net
         self.save_weights(net)
         self.player = car_ai.Car(self.start_x, self.start_y, self.start_angle)

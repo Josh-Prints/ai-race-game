@@ -75,57 +75,81 @@ def sense(x, y, angle):
 
 # ---------------- Neural network (from scratch) ----------------
 class NeuralNet:
-    """Simple feedforward net: inputs -> hidden (tanh) -> outputs (tanh)."""
-    def __init__(self, n_in, n_hidden, n_out, weights=None):
-        self.n_in, self.n_hidden, self.n_out = n_in, n_hidden, n_out
+    """Feedforward net: inputs -> N hidden layers (tanh) -> outputs (tanh).
+
+    hidden_sizes is a list, e.g. [10] for one hidden layer of 10 neurons,
+    or [12, 8] for two hidden layers. `layers` holds one (W, b) pair per
+    connection between consecutive layers, so len(layers) == len(hidden_sizes) + 1.
+    """
+    def __init__(self, n_in, hidden_sizes, n_out, weights=None):
+        if isinstance(hidden_sizes, int):  # back-compat: a bare int means one hidden layer
+            hidden_sizes = [hidden_sizes]
+        self.n_in, self.n_out = n_in, n_out
+
         if weights is not None:
-            self.w1, self.b1, self.w2, self.b2 = weights
+            self.layer_sizes = list(weights['layers'])
+            self.layers = [(w, b) for w, b in weights['weights']]
+            self.hidden_sizes = self.layer_sizes[1:-1]
         else:
-            self.w1 = [[random.uniform(-1, 1) for _ in range(n_in)] for _ in range(n_hidden)]
-            self.b1 = [random.uniform(-1, 1) for _ in range(n_hidden)]
-            self.w2 = [[random.uniform(-1, 1) for _ in range(n_hidden)] for _ in range(n_out)]
-            self.b2 = [random.uniform(-1, 1) for _ in range(n_out)]
-        # last activations, kept around so a UI can visualize "what the AI is thinking"
-        self.last_inputs = [0.0] * n_in
-        self.last_hidden = [0.0] * n_hidden
-        self.last_outputs = [0.0] * n_out
+            self.hidden_sizes = list(hidden_sizes)
+            self.layer_sizes = [n_in] + self.hidden_sizes + [n_out]
+            self.layers = []
+            for fan_in, fan_out in zip(self.layer_sizes[:-1], self.layer_sizes[1:]):
+                w = [[random.uniform(-1, 1) for _ in range(fan_in)] for _ in range(fan_out)]
+                b = [random.uniform(-1, 1) for _ in range(fan_out)]
+                self.layers.append((w, b))
+
+        # last activations per layer (inputs, each hidden layer, outputs), for a live "mind" view
+        self.activations = [[0.0] * n for n in self.layer_sizes]
+
+    @property
+    def n_hidden_layers(self):
+        return len(self.hidden_sizes)
 
     def get_weights(self):
-        return [self.w1, self.b1, self.w2, self.b2]
+        return {'layers': self.layer_sizes, 'weights': [[w, b] for w, b in self.layers]}
 
     def forward(self, inputs):
-        hidden = []
-        for h in range(self.n_hidden):
-            s = self.b1[h] + sum(self.w1[h][i] * inputs[i] for i in range(self.n_in))
-            hidden.append(math.tanh(s))
-        outputs = []
-        for o in range(self.n_out):
-            s = self.b2[o] + sum(self.w2[o][h] * hidden[h] for h in range(self.n_hidden))
-            outputs.append(math.tanh(s))
-        self.last_inputs = list(inputs)
-        self.last_hidden = hidden
-        self.last_outputs = outputs
-        return outputs
+        values = list(inputs)
+        self.activations[0] = values
+        for li, (w, b) in enumerate(self.layers):
+            next_values = []
+            for o in range(len(b)):
+                s = b[o] + sum(w[o][i] * values[i] for i in range(len(values)))
+                next_values.append(math.tanh(s))
+            values = next_values
+            self.activations[li + 1] = values
+        return values
+
+    @property
+    def last_inputs(self):
+        return self.activations[0]
+
+    @property
+    def last_outputs(self):
+        return self.activations[-1]
 
     def mutate(self, rate=0.15, strength=0.5):
         def m(v):
             return v + random.gauss(0, strength) if random.random() < rate else v
-        self.w1 = [[m(v) for v in row] for row in self.w1]
-        self.b1 = [m(v) for v in self.b1]
-        self.w2 = [[m(v) for v in row] for row in self.w2]
-        self.b2 = [m(v) for v in self.b2]
+        self.layers = [
+            ([[m(v) for v in row] for row in w], [m(v) for v in b])
+            for w, b in self.layers
+        ]
 
     @staticmethod
     def crossover(a, b):
-        """Mix two parent networks into a child (from scratch, no numpy)."""
+        """Mix two parent networks into a child (from scratch, no numpy). Assumes same architecture."""
         def mix_matrix(m1, m2):
             return [[random.choice([x, y]) for x, y in zip(r1, r2)] for r1, r2 in zip(m1, m2)]
         def mix_vec(v1, v2):
             return [random.choice([x, y]) for x, y in zip(v1, v2)]
-        child = NeuralNet(a.n_in, a.n_hidden, a.n_out, weights=[
-            mix_matrix(a.w1, b.w1), mix_vec(a.b1, b.b1),
-            mix_matrix(a.w2, b.w2), mix_vec(a.b2, b.b2)
-        ])
+        mixed_layers = [
+            (mix_matrix(wa, wb), mix_vec(ba, bb))
+            for (wa, ba), (wb, bb) in zip(a.layers, b.layers)
+        ]
+        child = NeuralNet(a.n_in, a.hidden_sizes, a.n_out,
+                           weights={'layers': a.layer_sizes, 'weights': mixed_layers})
         return child
 
 
