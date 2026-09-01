@@ -178,13 +178,6 @@ class Car:
         self.speed = max(-self.max_speed/1.6, min(self.max_speed, self.speed + throttle*self.accel))
         self._physics()
 
-    def step_manual(self, up, down, left, right):
-        if up: self.speed = min(self.max_speed, self.speed + self.accel)
-        if down: self.speed = max(-self.max_speed/1.6, self.speed - self.accel)
-        if left: self.angle -= self.turn_rate * (self.speed/self.max_speed)
-        if right: self.angle += self.turn_rate * (self.speed/self.max_speed)
-        self._physics()
-
     def _physics(self):
         dist, seg = closest_point_info(self.x, self.y)
         off_track = dist > TRACK_WIDTH/2 - 8
