@@ -136,47 +136,42 @@ class App:
                 self.make_button(custom_col, "⚡ Race Saved AI", lambda: self.race_saved_ai("Custom"),
                                   bg='#ffd166', fg='#10131c', width=18).pack(side='top', pady=(4, 0))
 
-        settings_frame = tk.Frame(self.root, bg=BG)
-        settings_frame.pack(pady=(0, 8))
-        width_frame = tk.Frame(settings_frame, bg=BG)
-        width_frame.pack(side='left', padx=10)
-        tk.Label(width_frame, text="Track width:", fg=MUTED, bg=BG).pack(side='left')
-        tk.Scale(width_frame, from_=50, to=140, orient='horizontal',
-                 variable=self.track_width_var, length=160, bg=BG, fg=TEXT,
-                 troughcolor=PANEL_BG, highlightthickness=0).pack(side='left')
+        # Settings sliders are collapsed by default (they'd otherwise push the window
+        # taller than most screens, below a 600px canvas) - toggle to reveal them.
+        toggle_col = tk.Frame(self.controls, bg=BG)
+        toggle_col.pack(side='left', padx=4)
+        self.settings_toggle_btn = self.make_button(
+            toggle_col, "⚙ Training Settings ▾", self.toggle_settings_panel,
+            bg='#2c3346', width=20)
+        self.settings_toggle_btn.pack(side='top')
 
-        gen_frame = tk.Frame(settings_frame, bg=BG)
-        gen_frame.pack(side='left', padx=10)
-        tk.Label(gen_frame, text="Generations (training rounds):", fg=MUTED, bg=BG).pack(side='left')
-        tk.Scale(gen_frame, from_=10, to=300, orient='horizontal',
-                 variable=self.generations_var, length=160, bg=BG, fg=TEXT,
-                 troughcolor=PANEL_BG, highlightthickness=0).pack(side='left')
+        self._settings_panel = tk.Frame(self.root, bg=PANEL_BG)
+        self._settings_visible = False
 
-        steps_frame = tk.Frame(settings_frame, bg=BG)
-        steps_frame.pack(side='left', padx=10)
-        tk.Label(steps_frame, text="Time per round (steps):", fg=MUTED, bg=BG).pack(side='left')
-        tk.Scale(steps_frame, from_=200, to=4000, orient='horizontal',
-                 variable=self.steps_var, length=160, bg=BG, fg=TEXT,
-                 troughcolor=PANEL_BG, highlightthickness=0).pack(side='left')
+        def slider(parent, label, var, lo, hi, r, c):
+            cell = tk.Frame(parent, bg=PANEL_BG)
+            cell.grid(row=r, column=c, padx=12, pady=6, sticky='w')
+            tk.Label(cell, text=label, fg=MUTED, bg=PANEL_BG).pack(side='left')
+            tk.Scale(cell, from_=lo, to=hi, orient='horizontal', variable=var, length=150,
+                     bg=PANEL_BG, fg=TEXT, troughcolor=BG, highlightthickness=0).pack(side='left')
 
-        layers_frame2 = tk.Frame(self.root, bg=BG)
-        layers_frame2.pack(pady=(0, 8))
-        hl_frame = tk.Frame(layers_frame2, bg=BG)
-        hl_frame.pack(side='left', padx=10)
-        tk.Label(hl_frame, text="Hidden layers:", fg=MUTED, bg=BG).pack(side='left')
-        tk.Scale(hl_frame, from_=1, to=4, orient='horizontal',
-                 variable=self.hidden_layers_var, length=120, bg=BG, fg=TEXT,
-                 troughcolor=PANEL_BG, highlightthickness=0).pack(side='left')
+        slider(self._settings_panel, "Track width:", self.track_width_var, 50, 140, 0, 0)
+        slider(self._settings_panel, "Generations:", self.generations_var, 10, 300, 0, 1)
+        slider(self._settings_panel, "Time per round (steps):", self.steps_var, 200, 4000, 0, 2)
+        slider(self._settings_panel, "Hidden layers:", self.hidden_layers_var, 1, 4, 1, 0)
+        slider(self._settings_panel, "Neurons per hidden layer:", self.neurons_var, 4, 24, 1, 1)
 
-        neurons_frame = tk.Frame(layers_frame2, bg=BG)
-        neurons_frame.pack(side='left', padx=10)
-        tk.Label(neurons_frame, text="Neurons per hidden layer:", fg=MUTED, bg=BG).pack(side='left')
-        tk.Scale(neurons_frame, from_=4, to=24, orient='horizontal',
-                 variable=self.neurons_var, length=160, bg=BG, fg=TEXT,
-                 troughcolor=PANEL_BG, highlightthickness=0).pack(side='left')
+        if self._settings_visible:
+            self._settings_panel.pack(pady=(0, 8))
 
-        self._width_frame = settings_frame
-        self._layers_frame = layers_frame2
+    def toggle_settings_panel(self):
+        self._settings_visible = not self._settings_visible
+        if self._settings_visible:
+            self._settings_panel.pack(pady=(0, 8))
+            self.settings_toggle_btn.config(text="⚙ Training Settings ▴")
+        else:
+            self._settings_panel.pack_forget()
+            self.settings_toggle_btn.config(text="⚙ Training Settings ▾")
 
     def draw_menu_background(self):
         self.canvas.configure(bg='#20242f')
@@ -230,8 +225,7 @@ class App:
         self.canvas.delete('all')
         self.canvas.configure(bg='#20242f')
         self.clear_controls()
-        self._width_frame.pack_forget()
-        self._layers_frame.pack_forget()
+        self._settings_panel.pack_forget()
         self.hud.config(text="Click to place track points (at least 4). Click points in order around the loop.")
 
         self.make_button(self.controls, "Undo last point", self.editor_undo).pack(side='left', padx=4)
@@ -276,8 +270,7 @@ class App:
             json.dump(pts, f)
         self.track_name = "Custom"
         car_ai.set_track(pts, self.track_width_var.get())
-        self._width_frame.pack_forget()
-        self._layers_frame.pack_forget()
+        self._settings_panel.pack_forget()
         self.begin_training()
 
     # ---------------- shared drawing ----------------
