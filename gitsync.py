@@ -83,7 +83,24 @@ def pull():
     repo = Repo(".")
     url = get_authed_url()
     print("Pulling from GitHub...")
-    porcelain.pull(repo, remote_location=url, refspecs=[b"refs/heads/main"])
+
+    # dulwich's porcelain.pull() can fail with WorkingTreeModifiedError if a tracked
+    # file looks locally modified (even something harmless like a line-ending change
+    # from OneDrive/an editor). Worse, when that happens it can still leave the local
+    # branch ref pointed at the new commit without ever writing the new file contents
+    # to disk - so a second "pull" reports success ("Done") but nothing actually
+    # changed, because dulwich thinks it's already up to date.
+    #
+    # This tool is a one-way sync (GitHub -> this folder), so instead of trying to
+    # merge local changes, always force the working tree to exactly match the
+    # fetched remote branch.
+    result = porcelain.fetch(repo, url)
+    remote_sha = result.refs.get(b"refs/heads/main")
+    if remote_sha is None:
+        print("Could not find refs/heads/main on the remote.")
+        return
+    repo.refs[b"refs/heads/main"] = remote_sha
+    porcelain.reset(repo, "hard", treeish=remote_sha)
     print("Done.")
 
 
