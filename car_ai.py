@@ -165,7 +165,8 @@ class Car:
         self.lap = 0
         self.alive = True
         self.off_track_steps = 0
-        self.total_progress = 0.0  # fitness accumulator = checkpoints passed (monotonic)
+        self.off_track_penalty = 0.0  # accumulates while off track, dragged down fitness
+        self.total_progress = 0.0  # fitness accumulator = checkpoints passed, minus off-track penalty
         self.checkpoints_passed = 0
         self.next_checkpoint = 1  # checkpoint 0 is the start, already "passed" at spawn
 
@@ -187,7 +188,7 @@ class Car:
     def _physics(self):
         dist, seg = closest_point_info(self.x, self.y)
         off_track = dist > TRACK_WIDTH/2 - 8
-        grip = 0.35 if off_track else 1.0
+        grip = 0.18 if off_track else 1.0  # off-road handling is much worse, not just a minor slip
         self.x += math.cos(self.angle) * self.speed * grip
         self.y += math.sin(self.angle) * self.speed * grip
         self.speed *= (1 - self.friction)
@@ -196,7 +197,8 @@ class Car:
 
         if off_track:
             self.off_track_steps += 1
-            if self.off_track_steps > 90:  # off track too long -> "crash"
+            self.off_track_penalty += 0.05  # every off-road step drags fitness down, even if it survives
+            if self.off_track_steps > 40:  # crashes much sooner than before (was 90)
                 self.alive = False
         else:
             self.off_track_steps = 0
@@ -209,4 +211,6 @@ class Car:
             self.next_checkpoint = (self.next_checkpoint + 1) % len(checkpoints)
 
         self.lap = self.checkpoints_passed // len(checkpoints)
-        self.total_progress = self.checkpoints_passed
+        # Two cars that reach the same checkpoints are no longer tied in fitness - the
+        # one that stayed on the road the whole time ranks higher for evolution/breeding.
+        self.total_progress = self.checkpoints_passed - self.off_track_penalty
