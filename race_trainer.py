@@ -490,7 +490,7 @@ class App:
         self.generation = 1
         self.steps_this_gen = 0
         self.best_ever_net = None
-        self.best_ever_fit = -1
+        self.best_ever_fit = float('-inf')  # fitness can go negative now (off-track penalty), so -1 wasn't low enough
         self.leader_net = None
         self.population = [car_ai.NeuralNet(N_IN, self.hidden_sizes, N_OUT) for _ in range(POP_SIZE)]
         self.cars = [car_ai.Car(self.start_x, self.start_y, self.start_angle) for _ in self.population]
