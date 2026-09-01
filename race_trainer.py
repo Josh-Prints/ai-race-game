@@ -15,6 +15,7 @@ import time
 import json
 import os
 import random
+import re
 
 import car_ai
 import tracks
@@ -27,12 +28,22 @@ N_IN, N_HIDDEN, N_OUT = 6, 10, 2
 CUSTOM_TRACK_PATH = 'custom_track.json'
 LAPS_TO_WIN = 3
 COUNTDOWN_SECONDS = 3
+INPUT_LABELS = ['S1', 'S2', 'S3', 'S4', 'S5', 'Spd']
+OUTPUT_LABELS = ['Steer', 'Gas']
 
 BG = '#1b1f2b'
 PANEL_BG = '#242a3a'
 ACCENT = '#8ecae6'
 TEXT = '#eef1f8'
 MUTED = '#9aa3b8'
+
+
+def safe_name(name):
+    return re.sub(r'[^A-Za-z0-9_-]+', '_', name)
+
+
+def weights_path(track_name):
+    return f"weights_{safe_name(track_name)}.json"
 
 
 def evolve(population, fitnesses):
@@ -66,9 +77,13 @@ class App:
 
         self.mode = 'menu'
         self.track_width_var = tk.IntVar(value=90)
+        self.generations_var = tk.IntVar(value=GENERATIONS)
+        self.steps_var = tk.IntVar(value=MAX_STEPS_PER_GEN)
         self.editor_points = []
         self.best_lap_time = None
         self._particles = []
+        self.track_name = "Oval Classic"
+        self.show_mind = False
 
         self.keys_down = set()
         root.bind('<KeyPress>', self.on_key_down)
@@ -93,26 +108,52 @@ class App:
         self.canvas.delete('all')
         self.clear_controls()
         self.draw_menu_background()
-        self.hud.config(text="Choose a track to train your AI on:", font=('Arial', 15, 'bold'))
+        self.hud.config(text="Choose a track to train your AI on, or race a saved AI instantly:",
+                         font=('Arial', 15, 'bold'))
 
         for name in tracks.PRESET_TRACKS:
-            self.make_button(self.controls, name, lambda n=name: self.choose_preset(n),
-                              bg='#33415c').pack(side='left', padx=4)
+            col = tk.Frame(self.controls, bg=BG)
+            col.pack(side='left', padx=4)
+            self.make_button(col, name, lambda n=name: self.choose_preset(n),
+                              bg='#33415c').pack(side='top')
+            if os.path.exists(weights_path(name)):
+                self.make_button(col, "⚡ Race Saved AI", lambda n=name: self.race_saved_ai(n),
+                                  bg='#ffd166', fg='#10131c', width=16).pack(side='top', pady=(4, 0))
 
-        self.make_button(self.controls, "Draw Custom Track", self.start_editor,
-                          bg='#8ecae6', fg='#10131c', width=18).pack(side='left', padx=4)
-
+        custom_col = tk.Frame(self.controls, bg=BG)
+        custom_col.pack(side='left', padx=4)
+        self.make_button(custom_col, "Draw Custom Track", self.start_editor,
+                          bg='#8ecae6', fg='#10131c', width=18).pack(side='top')
         if os.path.exists(CUSTOM_TRACK_PATH):
-            self.make_button(self.controls, "Load Saved Track", self.load_custom_track,
-                              bg='#ffd166', fg='#10131c', width=18).pack(side='left', padx=4)
+            self.make_button(custom_col, "Load Saved Track", self.load_custom_track,
+                              bg='#8ecae6', fg='#10131c', width=18).pack(side='top', pady=(4, 0))
+            if os.path.exists(weights_path("Custom")):
+                self.make_button(custom_col, "⚡ Race Saved AI", lambda: self.race_saved_ai("Custom"),
+                                  bg='#ffd166', fg='#10131c', width=18).pack(side='top', pady=(4, 0))
 
-        width_frame = tk.Frame(self.root, bg=BG)
-        width_frame.pack(pady=(0, 8))
+        settings_frame = tk.Frame(self.root, bg=BG)
+        settings_frame.pack(pady=(0, 8))
+        width_frame = tk.Frame(settings_frame, bg=BG)
+        width_frame.pack(side='left', padx=10)
         tk.Label(width_frame, text="Track width:", fg=MUTED, bg=BG).pack(side='left')
         tk.Scale(width_frame, from_=50, to=140, orient='horizontal',
-                 variable=self.track_width_var, length=200, bg=BG, fg=TEXT,
+                 variable=self.track_width_var, length=160, bg=BG, fg=TEXT,
                  troughcolor=PANEL_BG, highlightthickness=0).pack(side='left')
-        self._width_frame = width_frame
+
+        gen_frame = tk.Frame(settings_frame, bg=BG)
+        gen_frame.pack(side='left', padx=10)
+        tk.Label(gen_frame, text="Generations (training rounds):", fg=MUTED, bg=BG).pack(side='left')
+        tk.Scale(gen_frame, from_=10, to=300, orient='horizontal',
+                 variable=self.generations_var, length=160, bg=BG, fg=TEXT,
+                 troughcolor=PANEL_BG, highlightthickness=0).pack(side='left')
+
+        steps_frame = tk.Frame(settings_frame, bg=BG)
+        steps_frame.pack(side='left', padx=10)
+        tk.Label(steps_frame, text="Time per round (steps):", fg=MUTED, bg=BG).pack(side='left')
+        tk.Scale(steps_frame, from_=200, to=4000, orient='horizontal',
+                 variable=self.steps_var, length=160, bg=BG, fg=TEXT,
+                 troughcolor=PANEL_BG, highlightthickness=0).pack(side='left')
+        self._width_frame = settings_frame
 
     def draw_menu_background(self):
         self.canvas.configure(bg='#20242f')
@@ -128,14 +169,36 @@ class App:
                                  font=('Arial', 14), fill='#454d63')
 
     def choose_preset(self, name):
+        self.track_name = name
         car_ai.set_track(tracks.PRESET_TRACKS[name], self.track_width_var.get())
         self.begin_training()
 
     def load_custom_track(self):
+        self.track_name = "Custom"
         with open(CUSTOM_TRACK_PATH) as f:
             pts = json.load(f)
         car_ai.set_track(pts, self.track_width_var.get())
         self.begin_training()
+
+    def race_saved_ai(self, name):
+        """Load a previously saved AI for this track and jump straight to racing it."""
+        self.track_name = name
+        if name == "Custom":
+            with open(CUSTOM_TRACK_PATH) as f:
+                pts = json.load(f)
+            car_ai.set_track(pts, self.track_width_var.get())
+        else:
+            car_ai.set_track(tracks.PRESET_TRACKS[name], self.track_width_var.get())
+
+        with open(weights_path(name)) as f:
+            weights = json.load(f)
+        net = car_ai.NeuralNet(N_IN, N_HIDDEN, N_OUT, weights=weights)
+
+        wps = car_ai.waypoints
+        self.start_x, self.start_y = wps[0]
+        self.start_angle = math.atan2(wps[1][1]-wps[0][1], wps[1][0]-wps[0][0])
+        self.best_ever_net = net
+        self.start_race()
 
     # ---------------- track editor ----------------
     def start_editor(self):
@@ -187,6 +250,7 @@ class App:
         pts.append(pts[0])  # close the loop
         with open(CUSTOM_TRACK_PATH, 'w') as f:
             json.dump(pts, f)
+        self.track_name = "Custom"
         car_ai.set_track(pts, self.track_width_var.get())
         self._width_frame.pack_forget()
         self.begin_training()
@@ -277,27 +341,104 @@ class App:
             self.canvas.create_rectangle(x, y, x + w*frac, y+h, fill=color, outline='')
         self.canvas.create_rectangle(x, y, x+w, y+h, outline='#000')
 
+    def save_weights(self, net):
+        """Persist a net's weights to a per-track file so it can be raced later without retraining."""
+        if net is None:
+            return
+        try:
+            with open(weights_path(self.track_name), 'w') as f:
+                json.dump(net.get_weights(), f)
+            with open('best_weights.json', 'w') as f:
+                json.dump(net.get_weights(), f)
+        except Exception:
+            pass
+
+    def _activation_color(self, v):
+        v = max(-1.0, min(1.0, v))
+        if v >= 0:
+            r, g, b = 60, int(60 + v * 195), 90
+        else:
+            r, g, b = int(60 + -v * 195), 60, 70
+        return f'#{r:02x}{g:02x}{b:02x}'
+
+    def draw_ai_mind(self, net):
+        """Live view of the leading AI's neural network: nodes lit by activation, edges by weight."""
+        x0, y0, w, h = 630, 65, 250, 470
+        self.canvas.create_rectangle(x0, y0, x0+w, y0+h, fill='#0e1119', outline=ACCENT, width=2)
+        self.canvas.create_text(x0 + w/2, y0 + 16, text="AI's Mind", fill=ACCENT, font=('Arial', 12, 'bold'))
+
+        n_in, n_hid, n_out = net.n_in, net.n_hidden, net.n_out
+        in_x, hid_x, out_x = x0 + 45, x0 + w/2, x0 + w - 45
+        top, bot = y0 + 40, y0 + h - 20
+
+        def positions(n):
+            if n == 1:
+                return [(top + bot) / 2]
+            return [top + (bot - top) * i / (n - 1) for i in range(n)]
+
+        in_y = positions(n_in)
+        hid_y = positions(n_hid)
+        out_y = positions(n_out)
+
+        for i, iy in enumerate(in_y):
+            for hidx, hy in enumerate(hid_y):
+                weight = net.w1[hidx][i]
+                width = min(3, 0.3 + abs(weight))
+                color = '#4caf7d' if weight >= 0 else '#c94f4f'
+                self.canvas.create_line(in_x, iy, hid_x, hy, fill=color, width=width)
+        for hidx, hy in enumerate(hid_y):
+            for o, oy in enumerate(out_y):
+                weight = net.w2[o][hidx]
+                width = min(3, 0.3 + abs(weight))
+                color = '#4caf7d' if weight >= 0 else '#c94f4f'
+                self.canvas.create_line(hid_x, hy, out_x, oy, fill=color, width=width)
+
+        for i, iy in enumerate(in_y):
+            val = net.last_inputs[i] if i < len(net.last_inputs) else 0.0
+            self.canvas.create_oval(in_x-8, iy-8, in_x+8, iy+8, fill=self._activation_color(val), outline='#000')
+            label = INPUT_LABELS[i] if i < len(INPUT_LABELS) else str(i)
+            self.canvas.create_text(in_x - 24, iy, text=label, fill=MUTED, font=('Arial', 8), anchor='e')
+        for hidx, hy in enumerate(hid_y):
+            val = net.last_hidden[hidx] if hidx < len(net.last_hidden) else 0.0
+            self.canvas.create_oval(hid_x-6, hy-6, hid_x+6, hy+6, fill=self._activation_color(val), outline='#000')
+        for o, oy in enumerate(out_y):
+            val = net.last_outputs[o] if o < len(net.last_outputs) else 0.0
+            self.canvas.create_oval(out_x-8, oy-8, out_x+8, oy+8, fill=self._activation_color(val), outline='#000')
+            label = OUTPUT_LABELS[o] if o < len(OUTPUT_LABELS) else str(o)
+            self.canvas.create_text(out_x + 24, oy, text=label, fill=MUTED, font=('Arial', 8), anchor='w')
+
     # ---------------- training setup ----------------
     def begin_training(self):
         self.mode = 'training'
         self.clear_controls()
         self.canvas.delete('all')
         self.make_button(self.controls, "Back to Menu", self.build_menu, bg='#33415c').pack(side='left', padx=4)
+        self.mind_btn = self.make_button(self.controls, "Show AI Mind", self.toggle_mind,
+                                          bg='#33415c', width=16)
+        self.mind_btn.pack(side='left', padx=4)
 
         wps = car_ai.waypoints
         self.start_x, self.start_y = wps[0]
         self.start_angle = math.atan2(wps[1][1]-wps[0][1], wps[1][0]-wps[0][0])
 
+        self.generations_target = self.generations_var.get()
+        self.max_steps_per_gen = self.steps_var.get()
         self.generation = 1
         self.steps_this_gen = 0
         self.best_ever_net = None
         self.best_ever_fit = -1
+        self.leader_net = None
         self.population = [car_ai.NeuralNet(N_IN, N_HIDDEN, N_OUT) for _ in range(POP_SIZE)]
         self.cars = [car_ai.Car(self.start_x, self.start_y, self.start_angle) for _ in self.population]
 
+    def toggle_mind(self):
+        self.show_mind = not self.show_mind
+        self.mind_btn.config(text="Hide AI Mind" if self.show_mind else "Show AI Mind")
+
     # ---------------- training loop ----------------
     def training_step(self):
-        if self.generation > GENERATIONS:
+        if self.generation > self.generations_target:
+            self.save_weights(self.best_ever_net)
             self.start_race()
             return
 
@@ -308,11 +449,16 @@ class App:
                     car.step_ai(net)
                     any_alive = True
             self.steps_this_gen += 1
-            if not any_alive or self.steps_this_gen >= MAX_STEPS_PER_GEN:
+            if not any_alive or self.steps_this_gen >= self.max_steps_per_gen:
                 break
 
+        # track whichever car is currently in the lead, so "Show AI Mind" has something live to show
+        alive_cars = [(c, n) for c, n in zip(self.cars, self.population) if c.alive]
+        if alive_cars:
+            self.leader_net = max(alive_cars, key=lambda cn: cn[0].total_progress)[1]
+
         alive_count = sum(c.alive for c in self.cars)
-        if alive_count == 0 or self.steps_this_gen >= MAX_STEPS_PER_GEN:
+        if alive_count == 0 or self.steps_this_gen >= self.max_steps_per_gen:
             fitnesses = [c.total_progress for c in self.cars]
             best_idx = max(range(len(fitnesses)), key=lambda i: fitnesses[i])
             gen_best_fit = fitnesses[best_idx]
@@ -320,6 +466,7 @@ class App:
             if gen_best_fit > self.best_ever_fit:
                 self.best_ever_fit = gen_best_fit
                 self.best_ever_net = gen_best_net
+                self.save_weights(self.best_ever_net)
 
             self.population = evolve(self.population, fitnesses)
             self.cars = [car_ai.Car(self.start_x, self.start_y, self.start_angle) for _ in self.population]
@@ -331,16 +478,19 @@ class App:
             if car.alive:
                 self.draw_car(car, '#7fd0ff', size=8)
 
+        if self.show_mind and self.leader_net:
+            self.draw_ai_mind(self.leader_net)
+
         alive_count = sum(c.alive for c in self.cars)
         max_possible = len(car_ai.checkpoints) * 10
         frac = min(1.0, self.best_ever_fit / max_possible) if max_possible else 0
-        self.draw_progress_bar(20, 20, 250, 14, self.generation / GENERATIONS, '#8ecae6')
-        self.canvas.create_text(20, 42, anchor='w', text=f"Gen {self.generation}/{GENERATIONS}",
+        self.draw_progress_bar(20, 20, 250, 14, self.generation / self.generations_target, '#8ecae6')
+        self.canvas.create_text(20, 42, anchor='w', text=f"Gen {self.generation}/{self.generations_target}",
                                  fill=TEXT, font=('Arial', 10, 'bold'))
         self.draw_progress_bar(20, 55, 250, 10, frac, '#90e0af')
 
         self.hud.config(text=(
-            f"TRAINING - Generation {self.generation}/{GENERATIONS}   "
+            f"TRAINING - Generation {self.generation}/{self.generations_target}   "
             f"Alive: {alive_count}/{POP_SIZE}   Best ever fitness: {self.best_ever_fit:.1f}\n"
             f"Press R to skip ahead and race the best AI found so far."
         ), font=('Arial', 13))
@@ -349,16 +499,17 @@ class App:
     def start_race(self):
         self.mode = 'countdown'
         self.clear_controls()
+        self.mind_btn = self.make_button(self.controls, "Show AI Mind", self.toggle_mind,
+                                          bg='#33415c', width=16)
+        self.mind_btn.pack(side='left', padx=4)
+        self.mind_btn.config(text="Hide AI Mind" if self.show_mind else "Show AI Mind")
         net = self.best_ever_net if self.best_ever_net else car_ai.NeuralNet(N_IN, N_HIDDEN, N_OUT)
         self.ai_net = net
-        try:
-            with open('best_weights.json', 'w') as f:
-                json.dump(net.get_weights(), f)
-        except Exception:
-            pass
+        self.save_weights(net)
         self.player = car_ai.Car(self.start_x, self.start_y, self.start_angle)
         self.ai_car = car_ai.Car(self.start_x, self.start_y, self.start_angle)
         self.race_over = False
+        self.end_buttons_shown = False
         self.countdown_start = time.time()
 
     def countdown_step(self):
@@ -367,6 +518,8 @@ class App:
         self.draw_track()
         self.draw_car(self.ai_car, '#3aa0ff', label="AI")
         self.draw_car(self.player, '#ff4d4d', label="YOU")
+        if self.show_mind:
+            self.draw_ai_mind(self.ai_net)
         if remaining > 0:
             text = str(int(remaining) + 1)
         else:
@@ -396,6 +549,8 @@ class App:
         self.draw_track()
         self.draw_car(self.ai_car, '#3aa0ff', label="AI")
         self.draw_car(self.player, '#ff4d4d', label="YOU")
+        if self.show_mind:
+            self.draw_ai_mind(self.ai_net)
 
         # HUD panel: lap progress bars + speedometer
         self.draw_progress_bar(20, 20, 260, 14, min(1.0, self.player.lap / LAPS_TO_WIN), '#ff4d4d')
@@ -424,7 +579,8 @@ class App:
             self.canvas.create_text(450, 270, text=result, font=('Arial', 32, 'bold'), fill=result_color)
             self.canvas.create_text(450, 310, text=f"Race time: {elapsed:.1f}s", font=('Arial', 13), fill=TEXT)
             self.hud.config(text="Race finished.", font=('Arial', 15, 'bold'))
-            if not self.controls.winfo_children():
+            if not self.end_buttons_shown:
+                self.end_buttons_shown = True
                 self.make_button(self.controls, "Race Again", self.start_race,
                                   bg='#90e0af', fg='#10131c', width=16).pack(side='left', padx=4)
                 self.make_button(self.controls, "Back to Menu", self.build_menu,

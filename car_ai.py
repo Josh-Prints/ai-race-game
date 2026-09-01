@@ -85,6 +85,10 @@ class NeuralNet:
             self.b1 = [random.uniform(-1, 1) for _ in range(n_hidden)]
             self.w2 = [[random.uniform(-1, 1) for _ in range(n_hidden)] for _ in range(n_out)]
             self.b2 = [random.uniform(-1, 1) for _ in range(n_out)]
+        # last activations, kept around so a UI can visualize "what the AI is thinking"
+        self.last_inputs = [0.0] * n_in
+        self.last_hidden = [0.0] * n_hidden
+        self.last_outputs = [0.0] * n_out
 
     def get_weights(self):
         return [self.w1, self.b1, self.w2, self.b2]
@@ -98,6 +102,9 @@ class NeuralNet:
         for o in range(self.n_out):
             s = self.b2[o] + sum(self.w2[o][h] * hidden[h] for h in range(self.n_hidden))
             outputs.append(math.tanh(s))
+        self.last_inputs = list(inputs)
+        self.last_hidden = hidden
+        self.last_outputs = outputs
         return outputs
 
     def mutate(self, rate=0.15, strength=0.5):
