@@ -1,13 +1,14 @@
 """
-Race vs AI - choose or draw a track, train live in the same window, then race it.
+AI Racing Bets - choose or draw a track, train an AI live in the same window,
+then bet coins on it against a rival AI and watch the race play out.
 
 Needs car_ai.py and tracks.py in the same folder.
 
 Run:
     python race_trainer.py
 
-Controls once racing: Arrow keys to drive. Press R during training to skip
-ahead and race the best AI found so far.
+There's no manual driving - once training finishes, pick which AI you think
+will win and place a bet. Press R during training to skip ahead early.
 """
 import tkinter as tk
 import math
@@ -28,10 +29,17 @@ N_IN, N_OUT = 6, 2
 DEFAULT_HIDDEN_LAYERS = 1
 DEFAULT_NEURONS_PER_LAYER = 10
 CUSTOM_TRACK_PATH = 'custom_track.json'
+COINS_PATH = 'coins.json'
+STARTING_COINS = 100
+MIN_BET, MAX_BET = 5, 200
+DEFAULT_BET = 10
 LAPS_TO_WIN = 3
 COUNTDOWN_SECONDS = 3
 INPUT_LABELS = ['S1', 'S2', 'S3', 'S4', 'S5', 'Spd']
 OUTPUT_LABELS = ['Steer', 'Gas']
+
+RED = '#ff4d4d'
+BLUE = '#3aa0ff'
 
 BG = '#1b1f2b'
 PANEL_BG = '#242a3a'
@@ -46,6 +54,22 @@ def safe_name(name):
 
 def weights_path(track_name):
     return f"weights_{safe_name(track_name)}.json"
+
+
+def load_coins():
+    try:
+        with open(COINS_PATH) as f:
+            return int(json.load(f).get('coins', STARTING_COINS))
+    except Exception:
+        return STARTING_COINS
+
+
+def save_coins(coins):
+    try:
+        with open(COINS_PATH, 'w') as f:
+            json.dump({'coins': coins}, f)
+    except Exception:
+        pass
 
 
 def evolve(population, fitnesses):
@@ -92,7 +116,7 @@ class App:
         self.scroll_canvas.bind_all('<Button-4>', on_mousewheel)     # Linux scroll up
         self.scroll_canvas.bind_all('<Button-5>', on_mousewheel)     # Linux scroll down
 
-        title = tk.Label(self.body, text="RACE vs AI", font=('Arial', 22, 'bold'), fg=ACCENT, bg=BG)
+        title = tk.Label(self.body, text="AI RACING BETS", font=('Arial', 22, 'bold'), fg=ACCENT, bg=BG)
         title.pack(pady=(10, 2))
 
         self.canvas = tk.Canvas(self.body, width=900, height=600, bg='#3a5a3a', highlightthickness=2,
@@ -118,16 +142,14 @@ class App:
         self.steps_var = tk.IntVar(value=MAX_STEPS_PER_GEN)
         self.hidden_layers_var = tk.IntVar(value=DEFAULT_HIDDEN_LAYERS)
         self.neurons_var = tk.IntVar(value=DEFAULT_NEURONS_PER_LAYER)
+        self.bet_amount_var = tk.IntVar(value=DEFAULT_BET)
         self.editor_points = []
-        self.best_lap_time = None
-        self._particles = []
         self.track_name = "Oval Classic"
         self.show_mind = False
         self.hidden_sizes = [DEFAULT_NEURONS_PER_LAYER] * DEFAULT_HIDDEN_LAYERS
+        self.coins = load_coins()
 
-        self.keys_down = set()
         root.bind('<KeyPress>', self.on_key_down)
-        root.bind('<KeyRelease>', lambda e: self.keys_down.discard(e.keysym))
         self.canvas.bind('<Button-1>', self.on_canvas_click)
 
         self.build_menu()
@@ -148,7 +170,8 @@ class App:
         self.canvas.delete('all')
         self.clear_controls()
         self.draw_menu_background()
-        self.hud.config(text="Choose a track to train your AI on, or race a saved AI instantly:",
+        self.hud.config(text=f"💰 Coins: {self.coins}   -   Choose a track to train an AI on, "
+                              f"then bet on it against a rival:",
                          font=('Arial', 15, 'bold'))
 
         for name in tracks.PRESET_TRACKS:
@@ -157,7 +180,7 @@ class App:
             self.make_button(col, name, lambda n=name: self.choose_preset(n),
                               bg='#33415c').pack(side='top')
             if os.path.exists(weights_path(name)):
-                self.make_button(col, "⚡ Race Saved AI", lambda n=name: self.race_saved_ai(n),
+                self.make_button(col, "⚡ Bet on Saved AI", lambda n=name: self.bet_on_saved_ai(n),
                                   bg='#ffd166', fg='#10131c', width=16).pack(side='top', pady=(4, 0))
 
         custom_col = tk.Frame(self.controls, bg=BG)
@@ -168,8 +191,12 @@ class App:
             self.make_button(custom_col, "Load Saved Track", self.load_custom_track,
                               bg='#8ecae6', fg='#10131c', width=18).pack(side='top', pady=(4, 0))
             if os.path.exists(weights_path("Custom")):
-                self.make_button(custom_col, "⚡ Race Saved AI", lambda: self.race_saved_ai("Custom"),
+                self.make_button(custom_col, "⚡ Bet on Saved AI", lambda: self.bet_on_saved_ai("Custom"),
                                   bg='#ffd166', fg='#10131c', width=18).pack(side='top', pady=(4, 0))
+
+        if self.coins < MIN_BET:
+            self.make_button(self.controls, "💸 Out of coins - reset bankroll", self.reset_bankroll,
+                              bg='#c94f4f', width=24).pack(side='left', padx=4)
 
         # Settings sliders are collapsed by default (they'd otherwise push the window
         # taller than most screens, below a 600px canvas) - toggle to reveal them.
@@ -208,6 +235,11 @@ class App:
             self._settings_panel.pack_forget()
             self.settings_toggle_btn.config(text="⚙ Training Settings ▾")
 
+    def reset_bankroll(self):
+        self.coins = STARTING_COINS
+        save_coins(self.coins)
+        self.build_menu()
+
     def draw_menu_background(self):
         self.canvas.configure(bg='#20242f')
         w, h = 900, 600
@@ -217,9 +249,21 @@ class App:
             flat = [c for p in preview for c in p]
             self.canvas.create_line(*flat, width=70, fill='#2a2f3d', capstyle=tk.ROUND, joinstyle=tk.ROUND)
             self.canvas.create_line(*flat, width=2, fill='#3a4054', dash=(10, 8))
-        self.canvas.create_text(w/2, h/2 - 40, text="RACE vs AI", font=('Arial', 40, 'bold'), fill='#333a4d')
-        self.canvas.create_text(w/2, h/2 + 10, text="pick a track below to start training",
+        self.canvas.create_text(w/2, h/2 - 40, text="AI RACING BETS", font=('Arial', 40, 'bold'), fill='#333a4d')
+        self.canvas.create_text(w/2, h/2 + 10, text="pick a track below to train an AI, then bet on the race",
                                  font=('Arial', 14), fill='#454d63')
+
+    def _load_saved_net(self, track_name):
+        """Load a previously saved AI for a track, or None if there isn't one."""
+        path = weights_path(track_name)
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path) as f:
+                weights = json.load(f)
+            return car_ai.NeuralNet(N_IN, [], N_OUT, weights=weights)
+        except Exception:
+            return None
 
     def choose_preset(self, name):
         self.track_name = name
@@ -233,8 +277,8 @@ class App:
         car_ai.set_track(pts, self.track_width_var.get())
         self.begin_training()
 
-    def race_saved_ai(self, name):
-        """Load a previously saved AI for this track and jump straight to racing it."""
+    def bet_on_saved_ai(self, name):
+        """Load a previously saved AI ('Champion') and pit it against a fresh rookie AI to bet on."""
         self.track_name = name
         if name == "Custom":
             with open(CUSTOM_TRACK_PATH) as f:
@@ -243,15 +287,13 @@ class App:
         else:
             car_ai.set_track(tracks.PRESET_TRACKS[name], self.track_width_var.get())
 
-        with open(weights_path(name)) as f:
-            weights = json.load(f)
-        net = car_ai.NeuralNet(N_IN, [], N_OUT, weights=weights)
+        champion = self._load_saved_net(name)
+        rookie = car_ai.NeuralNet(champion.n_in, champion.hidden_sizes, champion.n_out)
 
         wps = car_ai.waypoints
         self.start_x, self.start_y = wps[0]
         self.start_angle = math.atan2(wps[1][1]-wps[0][1], wps[1][0]-wps[0][0])
-        self.best_ever_net = net
-        self.start_race()
+        self.start_betting(champion, "Champion", rookie, "Rookie")
 
     # ---------------- track editor ----------------
     def start_editor(self):
@@ -395,7 +437,7 @@ class App:
         self.canvas.create_rectangle(x, y, x+w, y+h, outline='#000')
 
     def save_weights(self, net):
-        """Persist a net's weights to a per-track file so it can be raced later without retraining."""
+        """Persist a net's weights to a per-track file so it can be bet on later without retraining."""
         if net is None:
             return
         try:
@@ -415,7 +457,7 @@ class App:
         return f'#{r:02x}{g:02x}{b:02x}'
 
     def draw_ai_mind(self, net):
-        """Live view of the leading AI's neural network: nodes lit by activation, edges by weight.
+        """Live view of an AI's neural network: nodes lit by activation, edges by weight.
 
         Works for any number of hidden layers - one column per layer in net.layer_sizes,
         spaced evenly across the panel.
@@ -484,6 +526,10 @@ class App:
         self.start_x, self.start_y = wps[0]
         self.start_angle = math.atan2(wps[1][1]-wps[0][1], wps[1][0]-wps[0][0])
 
+        # Whatever AI was previously saved for this track becomes the rival to bet
+        # against once training finishes - captured now, before training overwrites it.
+        self.reigning_champion = self._load_saved_net(self.track_name)
+
         self.generations_target = self.generations_var.get()
         self.max_steps_per_gen = self.steps_var.get()
         self.hidden_sizes = [self.neurons_var.get()] * self.hidden_layers_var.get()
@@ -502,8 +548,15 @@ class App:
     # ---------------- training loop ----------------
     def training_step(self):
         if self.generation > self.generations_target:
-            self.save_weights(self.best_ever_net)
-            self.start_race()
+            # If training was skipped (R key) before any generation finished evaluating,
+            # best_ever_net can still be None - fall back to a fresh net rather than crash.
+            trained_net = self.best_ever_net or car_ai.NeuralNet(N_IN, self.hidden_sizes, N_OUT)
+            self.save_weights(trained_net)
+            if self.reigning_champion is not None:
+                self.start_betting(trained_net, "New Challenger", self.reigning_champion, "Reigning Champion")
+            else:
+                rookie = car_ai.NeuralNet(N_IN, self.hidden_sizes, N_OUT)
+                self.start_betting(trained_net, "Your AI", rookie, "Untrained Rookie")
             return
 
         for _ in range(SUBSTEPS_PER_FRAME):
@@ -556,10 +609,48 @@ class App:
         self.hud.config(text=(
             f"TRAINING - Generation {self.generation}/{self.generations_target}   "
             f"Alive: {alive_count}/{POP_SIZE}   Best ever fitness: {self.best_ever_fit:.1f}\n"
-            f"Press R to skip ahead and race the best AI found so far."
+            f"Press R to skip ahead once you're ready to bet on the best AI found so far."
         ), font=('Arial', 13))
 
-    # ---------------- racing ----------------
+    # ---------------- betting ----------------
+    def start_betting(self, net_a, name_a, net_b, name_b):
+        """Show the two contestants and let the user pick one to bet on before racing."""
+        self.mode = 'betting'
+        self.contestant_a, self.name_a = net_a, name_a
+        self.contestant_b, self.name_b = net_b, name_b
+        self.bet_side = None
+        self.clear_controls()
+
+        tk.Label(self.controls, text="Bet amount:", fg=TEXT, bg=BG).pack(side='left', padx=(4, 0))
+        tk.Scale(self.controls, from_=MIN_BET, to=min(MAX_BET, max(MIN_BET, self.coins)), orient='horizontal',
+                 variable=self.bet_amount_var, length=140, bg=BG, fg=TEXT,
+                 troughcolor=PANEL_BG, highlightthickness=0).pack(side='left', padx=(0, 10))
+        self.make_button(self.controls, f"🔴 Bet on {name_a}", lambda: self.place_bet('a'),
+                          bg=RED, fg='#10131c', width=20).pack(side='left', padx=4)
+        self.make_button(self.controls, f"🔵 Bet on {name_b}", lambda: self.place_bet('b'),
+                          bg=BLUE, fg='#10131c', width=20).pack(side='left', padx=4)
+        self.make_button(self.controls, "Back to Menu", self.build_menu, bg='#33415c').pack(side='left', padx=4)
+
+        self.betting_car_a = car_ai.Car(self.start_x, self.start_y, self.start_angle)
+        self.betting_car_b = car_ai.Car(self.start_x, self.start_y, self.start_angle)
+
+    def betting_step(self):
+        self.draw_track()
+        self.draw_car(self.betting_car_a, RED, label=self.name_a)
+        self.draw_car(self.betting_car_b, BLUE, label=self.name_b)
+        self.hud.config(text=(
+            f"💰 Coins: {self.coins}   -   Place your bet: who wins this race, "
+            f"🔴 {self.name_a} or 🔵 {self.name_b}?"
+        ), font=('Arial', 15, 'bold'))
+
+    def place_bet(self, side):
+        if self.coins < MIN_BET:
+            return
+        self.bet_amount = min(self.bet_amount_var.get(), self.coins)
+        self.bet_side = side
+        self.start_race()
+
+    # ---------------- racing (AI vs AI - the outcome of what you bet on) ----------------
     def start_race(self):
         self.mode = 'countdown'
         self.clear_controls()
@@ -567,105 +658,114 @@ class App:
                                           bg='#33415c', width=16)
         self.mind_btn.pack(side='left', padx=4)
         self.mind_btn.config(text="Hide AI Mind" if self.show_mind else "Show AI Mind")
-        net = self.best_ever_net if self.best_ever_net else car_ai.NeuralNet(N_IN, self.hidden_sizes, N_OUT)
-        self.ai_net = net
-        self.save_weights(net)
-        self.player = car_ai.Car(self.start_x, self.start_y, self.start_angle)
-        self.ai_car = car_ai.Car(self.start_x, self.start_y, self.start_angle)
+        self.car_a = car_ai.Car(self.start_x, self.start_y, self.start_angle)
+        self.car_b = car_ai.Car(self.start_x, self.start_y, self.start_angle)
         self.race_over = False
         self.end_buttons_shown = False
         self.countdown_start = time.time()
+
+    def _picked_net(self):
+        return self.contestant_a if self.bet_side == 'a' else self.contestant_b
 
     def countdown_step(self):
         elapsed = time.time() - self.countdown_start
         remaining = COUNTDOWN_SECONDS - elapsed
         self.draw_track()
-        self.draw_car(self.ai_car, '#3aa0ff', label="AI")
-        self.draw_car(self.player, '#ff4d4d', label="YOU")
+        self.draw_car(self.car_a, RED, label=self.name_a)
+        self.draw_car(self.car_b, BLUE, label=self.name_b)
         if self.show_mind:
-            self.draw_ai_mind(self.ai_net)
-        if remaining > 0:
-            text = str(int(remaining) + 1)
-        else:
-            text = "GO!"
+            self.draw_ai_mind(self._picked_net())
+        text = str(int(remaining) + 1) if remaining > 0 else "GO!"
         self.canvas.create_text(450, 300, text=text, font=('Arial', 64, 'bold'), fill='#ffffff')
-        self.hud.config(text="Get ready! Arrow keys to drive once the race starts.", font=('Arial', 13))
+        picked_name = self.name_a if self.bet_side == 'a' else self.name_b
+        self.hud.config(text=f"You bet {self.bet_amount} coins on {picked_name}. Get ready!",
+                         font=('Arial', 13))
         if remaining <= -0.6:
             self.mode = 'race'
             self.start_time = time.time()
 
     def race_step(self):
         if not self.race_over:
-            up = 'Up' in self.keys_down
-            down = 'Down' in self.keys_down
-            left = 'Left' in self.keys_down
-            right = 'Right' in self.keys_down
-            self.player.step_manual(up, down, left, right)
-            if self.ai_car.alive:
-                self.ai_car.step_ai(self.ai_net)
+            if self.car_a.alive:
+                self.car_a.step_ai(self.contestant_a)
+            if self.car_b.alive:
+                self.car_b.step_ai(self.contestant_b)
 
-            player_won = self.player.lap >= LAPS_TO_WIN
-            ai_won = self.ai_car.lap >= LAPS_TO_WIN
-            if player_won or ai_won:
+            a_won = self.car_a.lap >= LAPS_TO_WIN
+            b_won = self.car_b.lap >= LAPS_TO_WIN
+            if a_won or b_won:
+                # This block runs exactly once, the frame the race ends - it settles the bet
+                # here rather than in the drawing code below, which re-runs every frame
+                # afterwards (until the player clicks a button) and would otherwise pay out
+                # or charge the bet again on every single one of those frames.
                 self.race_over = True
                 self.race_end_time = time.time()
+                tie = a_won and b_won
+                winner_side = None if tie else ('a' if a_won else 'b')
+                winner_name = "Nobody" if tie else (self.name_a if winner_side == 'a' else self.name_b)
+                if tie:
+                    self.result_text = "IT'S A TIE - bet refunded"
+                    self.result_color = '#ffd166'
+                elif winner_side == self.bet_side:
+                    self.coins += self.bet_amount
+                    self.result_text = f"{winner_name} WINS! You won {self.bet_amount} coins!"
+                    self.result_color = '#90e0af'
+                else:
+                    self.coins -= self.bet_amount
+                    self.result_text = f"{winner_name} WINS! You lost {self.bet_amount} coins."
+                    self.result_color = '#ff6b6b'
+                save_coins(self.coins)
 
         self.draw_track()
-        self.draw_car(self.ai_car, '#3aa0ff', label="AI")
-        self.draw_car(self.player, '#ff4d4d', label="YOU")
+        self.draw_car(self.car_a, RED, label=self.name_a)
+        self.draw_car(self.car_b, BLUE, label=self.name_b)
         if self.show_mind:
-            self.draw_ai_mind(self.ai_net)
+            self.draw_ai_mind(self._picked_net())
 
-        # HUD panel: lap progress bars + speedometer
-        self.draw_progress_bar(20, 20, 260, 14, min(1.0, self.player.lap / LAPS_TO_WIN), '#ff4d4d')
-        self.canvas.create_text(285, 27, anchor='w', text="YOU", fill=TEXT, font=('Arial', 10, 'bold'))
-        self.draw_progress_bar(20, 40, 260, 14, min(1.0, self.ai_car.lap / LAPS_TO_WIN), '#3aa0ff')
-        self.canvas.create_text(285, 47, anchor='w', text="AI", fill=TEXT, font=('Arial', 10, 'bold'))
-
-        speed_frac = abs(self.player.speed) / self.player.max_speed
-        self.draw_progress_bar(20, 62, 140, 8, speed_frac, '#ffd166')
-        self.canvas.create_text(165, 66, anchor='w', text="speed", fill=MUTED, font=('Arial', 8))
+        # HUD panel: lap progress bars for both contestants
+        self.draw_progress_bar(20, 20, 260, 14, min(1.0, self.car_a.lap / LAPS_TO_WIN), RED)
+        self.canvas.create_text(285, 27, anchor='w', text=self.name_a, fill=TEXT, font=('Arial', 10, 'bold'))
+        self.draw_progress_bar(20, 40, 260, 14, min(1.0, self.car_b.lap / LAPS_TO_WIN), BLUE)
+        self.canvas.create_text(285, 47, anchor='w', text=self.name_b, fill=TEXT, font=('Arial', 10, 'bold'))
 
         if self.race_over:
-            player_won = self.player.lap >= LAPS_TO_WIN
-            ai_won = self.ai_car.lap >= LAPS_TO_WIN
-            if player_won and not ai_won:
-                result = "YOU WIN!"
-                result_color = '#90e0af'
-            elif ai_won and not player_won:
-                result = "AI WINS!"
-                result_color = '#ff6b6b'
-            else:
-                result = "TIE!"
-                result_color = '#ffd166'
             elapsed = self.race_end_time - self.start_time
-            self.canvas.create_rectangle(200, 220, 700, 380, fill='#10131cdd', outline=ACCENT, width=2)
-            self.canvas.create_text(450, 270, text=result, font=('Arial', 32, 'bold'), fill=result_color)
-            self.canvas.create_text(450, 310, text=f"Race time: {elapsed:.1f}s", font=('Arial', 13), fill=TEXT)
+            self.canvas.create_rectangle(150, 210, 750, 390, fill='#10131c', outline=ACCENT, width=2)
+            self.canvas.create_text(450, 260, text=self.result_text, font=('Arial', 22, 'bold'), fill=self.result_color)
+            self.canvas.create_text(450, 300, text=f"Race time: {elapsed:.1f}s", font=('Arial', 13), fill=TEXT)
+            self.canvas.create_text(450, 330, text=f"💰 Coins: {self.coins}", font=('Arial', 16, 'bold'), fill=TEXT)
             self.hud.config(text="Race finished.", font=('Arial', 15, 'bold'))
             if not self.end_buttons_shown:
                 self.end_buttons_shown = True
-                self.make_button(self.controls, "Race Again", self.start_race,
-                                  bg='#90e0af', fg='#10131c', width=16).pack(side='left', padx=4)
+                self.make_button(self.controls, "Bet Again (same AIs)",
+                                  lambda: self.start_betting(self.contestant_a, self.name_a,
+                                                              self.contestant_b, self.name_b),
+                                  bg='#90e0af', fg='#10131c', width=20).pack(side='left', padx=4)
                 self.make_button(self.controls, "Back to Menu", self.build_menu,
                                   bg='#33415c', width=16).pack(side='left', padx=4)
         else:
             elapsed = time.time() - self.start_time
             self.hud.config(text=(
-                f"RACE - You: Lap {min(self.player.lap,LAPS_TO_WIN)}/{LAPS_TO_WIN}   "
-                f"AI: Lap {min(self.ai_car.lap,LAPS_TO_WIN)}/{LAPS_TO_WIN}   Time: {elapsed:.1f}s"
+                f"RACING - {self.name_a}: Lap {min(self.car_a.lap,LAPS_TO_WIN)}/{LAPS_TO_WIN}   "
+                f"{self.name_b}: Lap {min(self.car_b.lap,LAPS_TO_WIN)}/{LAPS_TO_WIN}   Time: {elapsed:.1f}s"
             ), font=('Arial', 13))
 
     def on_key_down(self, event):
-        self.keys_down.add(event.keysym)
         if event.keysym.lower() == 'r' and self.mode == 'training':
-            self.start_race()
+            self.training_step_skip_to_betting()
+
+    def training_step_skip_to_betting(self):
+        self.generation = self.generations_target + 1
+        self.training_step()
 
     # ---------------- main loop ----------------
     def loop(self):
         if self.mode == 'training':
             self.canvas.delete('all')
             self.training_step()
+        elif self.mode == 'betting':
+            self.canvas.delete('all')
+            self.betting_step()
         elif self.mode == 'countdown':
             self.canvas.delete('all')
             self.countdown_step()
@@ -678,6 +778,6 @@ class App:
 
 if __name__ == '__main__':
     root = tk.Tk()
-    root.title("Race vs AI - choose your track")
+    root.title("AI Racing Bets - choose your track")
     App(root)
     root.mainloop()

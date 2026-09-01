@@ -1,2 +1,9 @@
 __pycache__/
 *.pyc
+
+# generated at runtime, not part of the game's source
+best_weights.json
+weights_*.json
+coins.json
+custom_track.json
+.git_token.txt
