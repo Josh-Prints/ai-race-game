@@ -65,17 +65,52 @@ class App:
         self.root = root
         root.configure(bg=BG)
 
-        title = tk.Label(root, text="RACE vs AI", font=('Arial', 22, 'bold'), fg=ACCENT, bg=BG)
+        # Everything lives inside a scrollable body, so on a short screen (laptop,
+        # small display) nothing is ever unreachably off-screen - the window just
+        # shows a scrollbar instead of clipping content. Only the outer container
+        # is scrolled; the game canvas itself keeps its fixed size and coordinates.
+        outer = tk.Frame(root, bg=BG)
+        outer.pack(fill='both', expand=True)
+
+        self.scroll_canvas = tk.Canvas(outer, bg=BG, highlightthickness=0)
+        vscroll = tk.Scrollbar(outer, orient='vertical', command=self.scroll_canvas.yview)
+        self.scroll_canvas.configure(yscrollcommand=vscroll.set)
+        self.scroll_canvas.pack(side='left', fill='both', expand=True)
+        vscroll.pack(side='right', fill='y')
+
+        self.body = tk.Frame(self.scroll_canvas, bg=BG)
+        body_window = self.scroll_canvas.create_window((0, 0), window=self.body, anchor='nw')
+        self.body.bind('<Configure>', lambda e: self.scroll_canvas.configure(
+            scrollregion=self.scroll_canvas.bbox('all')))
+        self.scroll_canvas.bind('<Configure>', lambda e: self.scroll_canvas.itemconfig(
+            body_window, width=e.width))
+
+        def on_mousewheel(event):
+            delta = -1 if event.num == 4 else 1 if event.num == 5 else int(-event.delta / 120)
+            self.scroll_canvas.yview_scroll(delta, 'units')
+        self.scroll_canvas.bind_all('<MouseWheel>', on_mousewheel)   # Windows/macOS
+        self.scroll_canvas.bind_all('<Button-4>', on_mousewheel)     # Linux scroll up
+        self.scroll_canvas.bind_all('<Button-5>', on_mousewheel)     # Linux scroll down
+
+        title = tk.Label(self.body, text="RACE vs AI", font=('Arial', 22, 'bold'), fg=ACCENT, bg=BG)
         title.pack(pady=(10, 2))
 
-        self.canvas = tk.Canvas(root, width=900, height=600, bg='#3a5a3a', highlightthickness=2,
+        self.canvas = tk.Canvas(self.body, width=900, height=600, bg='#3a5a3a', highlightthickness=2,
                                  highlightbackground='#000')
         self.canvas.pack(padx=10)
 
-        self.hud = tk.Label(root, text="", font=('Arial', 13), justify='left', fg=TEXT, bg=BG)
+        self.hud = tk.Label(self.body, text="", font=('Arial', 13), justify='left', fg=TEXT, bg=BG)
         self.hud.pack(pady=(6, 0))
-        self.controls = tk.Frame(root, bg=BG)
+        self.controls = tk.Frame(self.body, bg=BG)
         self.controls.pack(pady=8)
+
+        # Cap the window to comfortably fit the screen; the scrollbar handles
+        # anything below that, so content is never simply cut off and unreachable.
+        root.update_idletasks()
+        screen_h = root.winfo_screenheight()
+        win_h = min(800, screen_h - 80)
+        root.geometry(f"940x{win_h}")
+        root.minsize(700, 400)
 
         self.mode = 'menu'
         self.track_width_var = tk.IntVar(value=90)
@@ -145,7 +180,7 @@ class App:
             bg='#2c3346', width=20)
         self.settings_toggle_btn.pack(side='top')
 
-        self._settings_panel = tk.Frame(self.root, bg=PANEL_BG)
+        self._settings_panel = tk.Frame(self.body, bg=PANEL_BG)
         self._settings_visible = False
 
         def slider(parent, label, var, lo, hi, r, c):
