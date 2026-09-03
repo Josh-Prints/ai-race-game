@@ -33,11 +33,8 @@ COINS_PATH = 'coins.json'
 STARTING_COINS = 100
 MIN_BET, MAX_BET = 5, 200
 DEFAULT_BET = 10
-ROOKIE_PATH = 'rookie_pool.json'
-ROOKIE_HIDDEN = [10]   # fixed architecture, independent of whatever the player is training
-ROOKIE_POP = 10
-ROOKIE_TOPUP_GENS = 3  # short top-up each time it's used, so it never blocks the UI for long
-ROOKIE_STEPS = 200
+TWIN_MUTATE_RATE = 0.15
+TWIN_MUTATE_STRENGTH = 0.3
 LAPS_TO_WIN = 3
 COUNTDOWN_SECONDS = 3
 INPUT_LABELS = ['S1', 'S2', 'S3', 'S4', 'S5', 'Spd']
@@ -77,28 +74,19 @@ def save_coins(coins):
         pass
 
 
-def load_rookie_pool():
-    """Returns (population, is_new). is_new is True the very first time this is ever
-    called (no saved pool yet) - the caller uses that to run a bigger one-time bootstrap
-    so the rookie isn't stuck near-zero fitness on a player's first-ever game.
+def clone_and_mutate(net, rate=TWIN_MUTATE_RATE, strength=TWIN_MUTATE_STRENGTH):
+    """Return an independent copy of net with a light random mutation applied - a
+    'sibling' AI that drives similarly but not identically, rather than a completely
+    separate (and usually much weaker) opponent.
     """
-    try:
-        with open(ROOKIE_PATH) as f:
-            saved = json.load(f)
-        pop = [car_ai.NeuralNet(N_IN, ROOKIE_HIDDEN, N_OUT, weights=w) for w in saved]
-        if len(pop) == ROOKIE_POP:
-            return pop, False
-    except Exception:
-        pass
-    return [car_ai.NeuralNet(N_IN, ROOKIE_HIDDEN, N_OUT) for _ in range(ROOKIE_POP)], True
-
-
-def save_rookie_pool(pop):
-    try:
-        with open(ROOKIE_PATH, 'w') as f:
-            json.dump([net.get_weights() for net in pop], f)
-    except Exception:
-        pass
+    weights = net.get_weights()
+    cloned_weights = {
+        'layers': list(weights['layers']),
+        'weights': [([row[:] for row in w], b[:]) for w, b in weights['weights']],
+    }
+    twin = car_ai.NeuralNet(net.n_in, net.hidden_sizes, net.n_out, weights=cloned_weights)
+    twin.mutate(rate=rate, strength=strength)
+    return twin
 
 
 def evolve(population, fitnesses):
@@ -308,7 +296,7 @@ class App:
         self.begin_training()
 
     def bet_on_saved_ai(self, name):
-        """Load a previously saved AI ('Champion') and pit it against a fresh rookie AI to bet on."""
+        """Load a previously saved AI and pit it against a lightly mutated twin of itself to bet on."""
         self.track_name = name
         if name == "Custom":
             with open(CUSTOM_TRACK_PATH) as f:
@@ -317,13 +305,13 @@ class App:
         else:
             car_ai.set_track(tracks.PRESET_TRACKS[name], self.track_width_var.get())
 
-        champion = self._load_saved_net(name)
+        saved_net = self._load_saved_net(name)
 
         wps = car_ai.waypoints
         self.start_x, self.start_y = wps[0]
         self.start_angle = math.atan2(wps[1][1]-wps[0][1], wps[1][0]-wps[0][0])
-        rookie = self.make_rookie()
-        self.start_betting(champion, "Champion", rookie, "Rookie")
+        twin = clone_and_mutate(saved_net)
+        self.start_betting(saved_net, "AI Alpha", twin, "AI Beta")
 
     # ---------------- track editor ----------------
     def start_editor(self):
@@ -542,42 +530,6 @@ class App:
                     label = OUTPUT_LABELS[i] if i < len(OUTPUT_LABELS) else str(i)
                     self.canvas.create_text(xs + r + 16, ys, text=label, fill=MUTED, font=('Arial', 8), anchor='w')
 
-    def make_rookie(self):
-        """Get a 'Rookie' opponent to bet against. A totally untrained, random-weight net
-        barely moves at all - that's a free win and a boring bet - so instead this keeps a
-        small population saved to disk (rookie_pool.json) and gives it a short extra training
-        top-up every time it's used. That keeps each individual bet screen fast (a few
-        seconds) while the rookie genuinely gets a little better the more it's raced,
-        without ever reaching the AI you actually trained for this session.
-        """
-        pop, is_new = load_rookie_pool()
-        generations = ROOKIE_TOPUP_GENS * 3 if is_new else ROOKIE_TOPUP_GENS
-        self.hud.config(text="Training the rookie AI for the first time (one-time, a bit longer)..."
-                         if is_new else "Warming up the rookie AI...", font=('Arial', 15, 'bold'))
-        self.root.update_idletasks()
-
-        best_net, best_fit = None, float('-inf')
-        for _ in range(generations):
-            cars = [car_ai.Car(self.start_x, self.start_y, self.start_angle) for _ in pop]
-            for _ in range(ROOKIE_STEPS):
-                any_alive = False
-                for car, net in zip(cars, pop):
-                    if car.alive:
-                        car.step_ai(net)
-                        any_alive = True
-                if not any_alive:
-                    break
-            fitnesses = [c.total_progress for c in cars]
-            idx = max(range(len(fitnesses)), key=lambda i: fitnesses[i])
-            if fitnesses[idx] > best_fit:
-                best_fit, best_net = fitnesses[idx], pop[idx]
-            pop = evolve(pop, fitnesses)
-            # keep a little fresh blood in the pool so it doesn't permanently plateau
-            pop[-1] = car_ai.NeuralNet(N_IN, ROOKIE_HIDDEN, N_OUT)
-
-        save_rookie_pool(pop)
-        return best_net if best_net is not None else pop[0]
-
     # ---------------- training setup ----------------
     def begin_training(self):
         self.mode = 'training'
@@ -591,10 +543,6 @@ class App:
         wps = car_ai.waypoints
         self.start_x, self.start_y = wps[0]
         self.start_angle = math.atan2(wps[1][1]-wps[0][1], wps[1][0]-wps[0][0])
-
-        # Whatever AI was previously saved for this track becomes the rival to bet
-        # against once training finishes - captured now, before training overwrites it.
-        self.reigning_champion = self._load_saved_net(self.track_name)
 
         self.generations_target = self.generations_var.get()
         self.max_steps_per_gen = self.steps_var.get()
@@ -618,11 +566,8 @@ class App:
             # best_ever_net can still be None - fall back to a fresh net rather than crash.
             trained_net = self.best_ever_net or car_ai.NeuralNet(N_IN, self.hidden_sizes, N_OUT)
             self.save_weights(trained_net)
-            if self.reigning_champion is not None:
-                self.start_betting(trained_net, "New Challenger", self.reigning_champion, "Reigning Champion")
-            else:
-                rookie = self.make_rookie()
-                self.start_betting(trained_net, "Your AI", rookie, "Rookie")
+            twin = clone_and_mutate(trained_net)
+            self.start_betting(trained_net, "AI Alpha", twin, "AI Beta")
             return
 
         for _ in range(SUBSTEPS_PER_FRAME):

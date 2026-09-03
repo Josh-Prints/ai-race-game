@@ -5,6 +5,5 @@ __pycache__/
 best_weights.json
 weights_*.json
 coins.json
-rookie_pool.json
 custom_track.json
 .git_token.txt
